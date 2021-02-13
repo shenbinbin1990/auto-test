@@ -1,0 +1,93 @@
+package aop;
+
+import com.alibaba.fastjson.JSON;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.example.testsystemdemo.entity.JobEntity;
+import com.example.testsystemdemo.entity.StepEntity;
+import com.example.testsystemdemo.mapper.JobMapper;
+import com.example.testsystemdemo.mapper.StepMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.aspectj.lang.ProceedingJoinPoint;
+import org.aspectj.lang.annotation.Around;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Pointcut;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+import javax.servlet.http.HttpServletRequest;
+import java.util.List;
+
+
+//由于测试版本只进行测试，有代码需要修改在原代码修改之后merge到测试版本，所以不用担心测试版本代码影响线上代码
+@Aspect
+//@Component
+public class ControllerAspect {
+    @Autowired
+    private JobMapper jobMapper;
+    @Autowired
+    private StepMapper stepMapper;
+    @Value("${server.port}")
+    private String port;
+
+    /**
+     * 定义切入点，切入点为com.example.demo.aop.AopController中的所有函数
+     * 通过@Pointcut注解声明频繁使用的切点表达式
+     */
+    @Pointcut("execution(public * com.example.testsystemdemo.controller..*.*(..))")
+    public void BrokerAspect() {
+
+    }
+
+    /**
+     * @description 使用环绕通知
+     */
+    @Around("BrokerAspect()")
+    public Object doAroundGame(ProceedingJoinPoint pjp) throws Throwable {
+        Object responseObj = null;
+        try {
+            HttpServletRequest request = ((ServletRequestAttributes) RequestContextHolder.getRequestAttributes()).getRequest();
+            String requestURI = request.getRequestURI();
+            Object[] args = pjp.getArgs();
+            String requestJson = "{}";
+            if(args.length != 0){
+                requestJson = JSON.toJSONString(args[0]);
+            }
+            responseObj = pjp.proceed();
+            ObjectMapper objectMapper = new ObjectMapper();
+            String responseJson = objectMapper.writeValueAsString(responseObj);
+            //新的步骤id
+            String stepId = null;
+            //获取最后一个jobid比如1
+            List<JobEntity> jobEntityList = jobMapper.selectList(null);
+            JobEntity jobEntity = jobEntityList.get(jobEntityList.size() - 1);
+            Integer jobId = jobEntity.getId();
+            QueryWrapper<StepEntity> queryWrapper = new QueryWrapper<>();
+            queryWrapper.lambda().like(StepEntity::getId, jobId + ".");
+            List<StepEntity> stepEntityList = stepMapper.selectList(queryWrapper);
+            //查看是否含有 %1.% 的stepid，如果有，否则总数+1开始.
+            if (stepEntityList != null && stepEntityList.size() > 0) {
+                stepId = jobId + "." + (stepEntityList.size()+1);
+            } else {
+                //否则从1开始
+                stepId = jobId + ".1";
+            }
+            StepEntity stepEntity = StepEntity.builder().id(stepId).requestUrl("http://localhost:"+ port + requestURI).requestJson(requestJson).responseJson(responseJson).build();
+            stepMapper.insert(stepEntity);
+            String stepIdSequence = "";
+            for(int i=0;i<stepEntityList.size()+1;i++){
+                if(i != 0){
+                    stepIdSequence += ","+jobId + "." +(i+1);
+                }else{
+                    stepIdSequence += jobId + "." +1;
+                }
+            }
+            jobEntity.setStepIdSequence(stepIdSequence);
+            jobMapper.updateById(jobEntity);
+        }catch(Exception e){
+            System.out.println(e.getMessage());
+        }
+        return responseObj;
+    }
+}
